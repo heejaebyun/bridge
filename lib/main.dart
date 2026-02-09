@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:home_widget/home_widget.dart';
-import 'dart:async';
+import 'package:flutter/services.dart';
+import 'services/database_service.dart';
+import 'services/card_service.dart';
+import 'screens/chat_tab.dart';
+import 'screens/timeline_tab.dart';
+import 'screens/triage_tab.dart';
+import 'screens/calendar_tab.dart';
+import 'screens/dashboard_screen.dart';
+import 'screens/onboarding_screen.dart';
+import 'services/smart_notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 위젯 초기화
-  await HomeWidget.setAppGroupId('group.bridge.app');
+  // 상태바 투명
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+  ));
 
   runApp(const BridgeApp());
 }
@@ -22,558 +29,273 @@ class BridgeApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Bridge',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0A0F1A),
         primaryColor: const Color(0xFF22D3EE),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF22D3EE),
+          secondary: Color(0xFF818CF8),
+          surface: Color(0xFF1E293B),
+          onPrimary: Colors.black,
+          onSecondary: Colors.white,
+          onSurface: Colors.white,
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF1E293B),
+          elevation: 0,
+        ),
+        cardTheme: const CardThemeData(
+          color: Color(0xFF1E293B),
+          elevation: 0,
+        ),
       ),
-      home: const HomeScreen(),
-      debugShowCheckedModeBanner: false,
+      home: const BridgeRoot(),
     );
   }
 }
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+/// 앱 루트: 온보딩 여부 확인 후 분기
+class BridgeRoot extends StatefulWidget {
+  const BridgeRoot({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<BridgeRoot> createState() => _BridgeRootState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  final TextEditingController _controller = TextEditingController();
-  final stt.SpeechToText _speech = stt.SpeechToText();
-
-  bool _isListening = false;
-  String _statusText = '무엇을 도와드릴까요?';
-  List<Contact> _contacts = [];
-  StreamSubscription? _widgetClickSubscription;
+class _BridgeRootState extends State<BridgeRoot> {
+  bool _isLoading = true;
+  bool _showOnboarding = false;
+  final DatabaseService _db = DatabaseService();
 
   @override
   void initState() {
     super.initState();
-    _requestPermissions();
-    _listenToWidgetClicks();
-    _updateWidget();
+    _checkOnboarding();
   }
 
-  // 위젯 클릭 이벤트 리스닝
-  void _listenToWidgetClicks() {
-    _widgetClickSubscription = HomeWidget.widgetClicked.listen((uri) {
-      // 위젯에서 앱을 열면 바로 음성 입력 시작
-      if (uri != null) {
-        Future.delayed(const Duration(milliseconds: 300), () {
-          _startListening();
-        });
-      }
-    });
-  }
-
-  // 위젯 업데이트
-  Future<void> _updateWidget() async {
-    await HomeWidget.saveWidgetData<String>('app_name', 'BRIDGE');
-    await HomeWidget.saveWidgetData<String>('status', _statusText);
-    await HomeWidget.updateWidget(
-      name: 'BridgeWidgetProvider',
-      androidName: 'BridgeWidgetProvider',
-    );
-  }
-
-  Future<void> _requestPermissions() async {
-    await Permission.contacts.request();
-    await Permission.microphone.request();
-    await _loadContacts();
-  }
-
-  Future<void> _loadContacts() async {
-    if (await FlutterContacts.requestPermission()) {
-      final contacts = await FlutterContacts.getContacts(withProperties: true);
-      setState(() {
-        _contacts = contacts;
-      });
-    }
-  }
-
-  Future<void> _startListening() async {
-    bool available = await _speech.initialize();
-    if (available) {
-      setState(() {
-        _isListening = true;
-        _statusText = '듣고 있어요...';
-      });
-      _updateWidget();
-
-      _speech.listen(
-        onResult: (result) {
-          if (result.finalResult) {
-            _controller.text = result.recognizedWords;
-            _processCommand(result.recognizedWords);
-          }
-        },
-        localeId: 'ko_KR',
-      );
-    }
-  }
-
-  void _stopListening() {
-    _speech.stop();
+  Future<void> _checkOnboarding() async {
+    final isFirst = await _db.isFirstLaunch();
     setState(() {
-      _isListening = false;
-      _statusText = '무엇을 도와드릴까요?';
+      _showOnboarding = isFirst;
+      _isLoading = false;
     });
-    _updateWidget();
   }
 
-  Future<void> _processCommand(String command) async {
+  void _onOnboardingComplete() async {
+    await _db.setFirstLaunchDone();
+    setState(() => _showOnboarding = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0A0F1A),
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFF22D3EE)),
+        ),
+      );
+    }
+
+    if (_showOnboarding) {
+      return OnboardingScreen(onComplete: _onOnboardingComplete);
+    }
+
+    return const BridgeHome();
+  }
+}
+
+class BridgeHome extends StatefulWidget {
+  const BridgeHome({super.key});
+
+  @override
+  State<BridgeHome> createState() => _BridgeHomeState();
+}
+
+class _BridgeHomeState extends State<BridgeHome> {
+  int _currentIndex = 0;
+  final DatabaseService _db = DatabaseService();
+  final CardService _cardService = CardService();
+
+  // Triage 배지 카운트
+  int _triageCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _checkFirstLaunch();
+    await _updateTriageCount();
+    // Phase 1: 스마트 알림 초기화
+    final notif = SmartNotificationService();
+    await notif.initialize();
+    await notif.recordAppOpen();
+    await notif.scheduleNextDayNotifications();
+    await notif.checkPendingNotifications();
+  }
+
+  Future<void> _checkFirstLaunch() async {
+    final isFirst = await _db.isFirstLaunch();
+    if (isFirst) {
+      await _db.setFirstLaunchDone();
+      // 첫 실행: Chat 탭에서 환영 메시지가 자동으로 나옴
+    }
+  }
+
+  Future<void> _updateTriageCount() async {
+    final cards = await _cardService.getTriageCards();
+    if (mounted) {
+      setState(() {
+        _triageCount = cards.length;
+      });
+    }
+  }
+
+  void _onTabChanged(int index) {
     setState(() {
-      _statusText = '처리 중...';
+      _currentIndex = index;
     });
-    _updateWidget();
-
-    // 카카오톡 패턴
-    final kakaoPattern = RegExp(r'(.+?)(?:한테|에게|께)\s*(?:카톡|카카오톡|메시지)');
-    final match = kakaoPattern.firstMatch(command);
-
-    if (match != null) {
-      final name = match.group(1)?.trim() ?? '';
-      await _openKakaoChat(name);
-    } else if (command.contains('카톡') || command.contains('카카오톡')) {
-      await _launchKakao();
-    }
-    // 유튜브 뮤직
-    else if (command.contains('유튜브 뮤직') || command.contains('유튜브뮤직')) {
-      final query = command
-          .replaceAll('유튜브 뮤직에서', '')
-          .replaceAll('유튜브뮤직에서', '')
-          .replaceAll('유튜브 뮤직', '')
-          .replaceAll('유튜브뮤직', '')
-          .replaceAll('틀어', '')
-          .replaceAll('재생', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchYoutubeMusic(query);
-    }
-    // 유튜브
-    else if (command.contains('유튜브') || command.contains('유투브')) {
-      final query = command
-          .replaceAll('유튜브에서', '')
-          .replaceAll('유투브에서', '')
-          .replaceAll('유튜브', '')
-          .replaceAll('유투브', '')
-          .replaceAll('검색', '')
-          .replaceAll('틀어', '')
-          .replaceAll('찾아', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchYoutube(query);
-    }
-    // 스포티파이
-    else if (command.contains('스포티파이') || command.contains('스포')) {
-      final query = command
-          .replaceAll('스포티파이에서', '')
-          .replaceAll('스포티파이', '')
-          .replaceAll('스포에서', '')
-          .replaceAll('스포', '')
-          .replaceAll('틀어', '')
-          .replaceAll('재생', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchSpotify(query);
-    }
-    // 멜론
-    else if (command.contains('멜론')) {
-      final query = command
-          .replaceAll('멜론에서', '')
-          .replaceAll('멜론', '')
-          .replaceAll('틀어', '')
-          .replaceAll('재생', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchMelon(query);
-    }
-    // 배민
-    else if (command.contains('배민') || command.contains('배달의민족')) {
-      final query = command
-          .replaceAll('배민에서', '')
-          .replaceAll('배달의민족에서', '')
-          .replaceAll('배민', '')
-          .replaceAll('배달의민족', '')
-          .replaceAll('시켜', '')
-          .replaceAll('검색', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchBaemin(query);
-    }
-    // 토스
-    else if (command.contains('토스')) {
-      await _launchToss();
-    }
-    // 네이버
-    else if (command.contains('네이버')) {
-      final query = command
-          .replaceAll('네이버에서', '')
-          .replaceAll('네이버', '')
-          .replaceAll('검색', '')
-          .replaceAll('찾아', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchNaver(query);
-    }
-    // 쿠팡이츠
-    else if (command.contains('쿠팡이츠') || command.contains('쿠팡 이츠')) {
-      final query = command
-          .replaceAll('쿠팡이츠에서', '')
-          .replaceAll('쿠팡 이츠에서', '')
-          .replaceAll('쿠팡이츠', '')
-          .replaceAll('쿠팡 이츠', '')
-          .replaceAll('시켜', '')
-          .replaceAll('검색', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchCoupangEats(query);
-    }
-    // 쿠팡
-    else if (command.contains('쿠팡')) {
-      final query = command
-          .replaceAll('쿠팡에서', '')
-          .replaceAll('쿠팡', '')
-          .replaceAll('검색', '')
-          .replaceAll('찾아', '')
-          .replaceAll('줘', '')
-          .trim();
-      await _launchCoupang(query);
-    } else {
-      setState(() {
-        _statusText = '카톡, 유튜브, 쿠팡, 네이버, 배민, 토스, 멜론, 스포티파이';
-      });
-      _updateWidget();
-    }
-  }
-
-  Future<void> _openKakaoChat(String name) async {
-    Contact? found;
-    for (var contact in _contacts) {
-      if (contact.displayName.contains(name)) {
-        found = contact;
-        break;
-      }
-    }
-
-    if (found != null) {
-      final Uri kakaoUri = Uri.parse('kakaotalk://launch');
-
-      if (await canLaunchUrl(kakaoUri)) {
-        await launchUrl(kakaoUri, mode: LaunchMode.externalApplication);
-        setState(() {
-          _statusText = '${found!.displayName}님 찾았어요. 카카오톡을 열었어요.';
-        });
-        _updateWidget();
-      } else {
-        setState(() {
-          _statusText = '카카오톡이 설치되어 있지 않아요.';
-        });
-        _updateWidget();
-      }
-    } else {
-      setState(() {
-        _statusText = '"$name"님을 연락처에서 찾지 못했어요.';
-      });
-      _updateWidget();
-    }
-  }
-
-  Future<void> _launchKakao() async {
-    final Uri kakaoUri = Uri.parse('kakaotalk://launch');
-    if (await canLaunchUrl(kakaoUri)) {
-      await launchUrl(kakaoUri, mode: LaunchMode.externalApplication);
-      setState(() {
-        _statusText = '카카오톡을 열었어요.';
-      });
-      _updateWidget();
-    }
-  }
-
-  Future<void> _launchYoutube(String query) async {
-    Uri uri;
-    if (query.isNotEmpty) {
-      uri = Uri.parse(
-        'https://www.youtube.com/results?search_query=${Uri.encodeComponent(query)}',
-      );
-    } else {
-      uri = Uri.parse('https://www.youtube.com');
-    }
-
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
-    setState(() {
-      _statusText = query.isNotEmpty ? '유튜브에서 "$query" 검색' : '유튜브 열었어요';
-    });
-    _updateWidget();
-  }
-
-  Future<void> _launchCoupang(String query) async {
-    Uri uri;
-    if (query.isNotEmpty) {
-      uri = Uri.parse('coupang://search?query=${Uri.encodeComponent(query)}');
-    } else {
-      uri = Uri.parse('coupang://');
-    }
-
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-      setState(() {
-        _statusText = query.isNotEmpty ? '쿠팡에서 "$query" 검색' : '쿠팡 열었어요';
-      });
-      _updateWidget();
-    } else {
-      // 쿠팡 앱 없으면 웹으로
-      final webUri = Uri.parse(
-        'https://www.coupang.com/np/search?q=${Uri.encodeComponent(query)}',
-      );
-      await launchUrl(webUri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  Future<void> _launchYoutubeMusic(String query) async {
-    Uri uri;
-    if (query.isNotEmpty) {
-      uri = Uri.parse(
-        'https://music.youtube.com/search?q=${Uri.encodeComponent(query)}',
-      );
-    } else {
-      uri = Uri.parse('https://music.youtube.com');
-    }
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
-    setState(() {
-      _statusText = query.isNotEmpty ? '유튜브 뮤직에서 "$query" 검색' : '유튜브 뮤직 열었어요';
-    });
-    _updateWidget();
-  }
-
-  Future<void> _launchSpotify(String query) async {
-    final appUri = Uri.parse('spotify://search/${Uri.encodeComponent(query)}');
-
-    if (await canLaunchUrl(appUri)) {
-      await launchUrl(appUri, mode: LaunchMode.externalApplication);
-      setState(() {
-        _statusText = query.isNotEmpty ? '스포티파이에서 "$query" 검색' : '스포티파이 열었어요';
-      });
-      _updateWidget();
-    } else {
-      setState(() {
-        _statusText = '스포티파이 앱이 필요해요';
-      });
-      _updateWidget();
-      // 플레이스토어로 보내기
-      final storeUri = Uri.parse(
-        'https://play.google.com/store/apps/details?id=com.spotify.music',
-      );
-      await launchUrl(storeUri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  Future<void> _launchMelon(String query) async {
-    final appUri = Uri.parse(
-      'melonapp://search?query=${Uri.encodeComponent(query)}',
-    );
-
-    if (await canLaunchUrl(appUri)) {
-      await launchUrl(appUri, mode: LaunchMode.externalApplication);
-      setState(() {
-        _statusText = query.isNotEmpty ? '멜론에서 "$query" 검색' : '멜론 열었어요';
-      });
-      _updateWidget();
-    } else {
-      setState(() {
-        _statusText = '멜론 앱이 필요해요';
-      });
-      _updateWidget();
-      final storeUri = Uri.parse(
-        'https://play.google.com/store/apps/details?id=com.iloen.melon',
-      );
-      await launchUrl(storeUri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  Future<void> _launchBaemin(String query) async {
-    Uri uri;
-    if (query.isNotEmpty) {
-      uri = Uri.parse(
-        'https://www.baemin.com/search?keyword=${Uri.encodeComponent(query)}',
-      );
-    } else {
-      uri = Uri.parse('https://www.baemin.com');
-    }
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
-    setState(() {
-      _statusText = query.isNotEmpty ? '배민에서 "$query" 검색' : '배민 열었어요';
-    });
-    _updateWidget();
-  }
-
-  Future<void> _launchToss() async {
-    final uri = Uri.parse('https://toss.im');
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
-    setState(() {
-      _statusText = '토스 열었어요';
-    });
-    _updateWidget();
-  }
-
-  Future<void> _launchNaver(String query) async {
-    Uri uri;
-    if (query.isNotEmpty) {
-      uri = Uri.parse(
-        'https://search.naver.com/search.naver?query=${Uri.encodeComponent(query)}',
-      );
-    } else {
-      uri = Uri.parse('https://www.naver.com');
-    }
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
-    setState(() {
-      _statusText = query.isNotEmpty ? '네이버에서 "$query" 검색' : '네이버 열었어요';
-    });
-    _updateWidget();
-  }
-
-  Future<void> _launchCoupangEats(String query) async {
-    final appUri = Uri.parse('coupangeats://');
-
-    if (await canLaunchUrl(appUri)) {
-      await launchUrl(appUri, mode: LaunchMode.externalApplication);
-      setState(() {
-        _statusText = '쿠팡이츠 열었어요';
-      });
-      _updateWidget();
-    } else {
-      setState(() {
-        _statusText = '쿠팡이츠 앱이 필요해요';
-      });
-      _updateWidget();
-      final storeUri = Uri.parse(
-        'https://play.google.com/store/apps/details?id=com.coupang.mobile.eats',
-      );
-      await launchUrl(storeUri, mode: LaunchMode.externalApplication);
-    }
+    // 탭 변경 시 Triage 카운트 갱신
+    _updateTriageCount();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            children: [
-              const SizedBox(height: 40),
-
-              const Text(
-                'BRIDGE',
-                style: TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF22D3EE),
-                  letterSpacing: 8,
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              Text(
-                _statusText,
-                style: const TextStyle(fontSize: 16, color: Colors.white70),
-                textAlign: TextAlign.center,
-              ),
-
-              const Spacer(),
-
-              GestureDetector(
-                onTapDown: (_) => _startListening(),
-                onTapUp: (_) => _stopListening(),
-                onTapCancel: () => _stopListening(),
-                child: Container(
-                  width: 120,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _isListening
-                        ? const Color(0xFF22D3EE)
-                        : const Color(0xFF1E293B),
-                    border: Border.all(
-                      color: const Color(0xFF22D3EE),
-                      width: 2,
-                    ),
-                    boxShadow: _isListening
-                        ? [
-                            BoxShadow(
-                              color: const Color(0xFF22D3EE).withOpacity(0.5),
-                              blurRadius: 30,
-                              spreadRadius: 5,
-                            ),
-                          ]
-                        : [],
-                  ),
-                  child: Icon(
-                    _isListening ? Icons.mic : Icons.mic_none,
-                    size: 48,
-                    color: _isListening
-                        ? Colors.black
-                        : const Color(0xFF22D3EE),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              const Text(
-                '길게 눌러서 말하기',
-                style: TextStyle(fontSize: 14, color: Colors.white38),
-              ),
-
-              const Spacer(),
-
-              Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E293B),
-                  borderRadius: BorderRadius.circular(30),
-                  border: Border.all(color: const Color(0xFF334155)),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _controller,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          hintText: '또는 여기에 입력...',
-                          hintStyle: TextStyle(color: Colors.white38),
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 16,
-                          ),
-                        ),
-                        onSubmitted: _processCommand,
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.send, color: Color(0xFF22D3EE)),
-                      onPressed: () => _processCommand(_controller.text),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 24),
-            ],
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          ChatTab(
+            onCardCreated: () => _updateTriageCount(),
+          ),
+          TimelineTab(),
+          TriageTab(
+            onTriageChanged: () => _updateTriageCount(),
+          ),
+          const CalendarTab(),
+        ],
+      ),
+      bottomNavigationBar: Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF1E293B),
+          border: Border(
+            top: BorderSide(color: Color(0xFF334155), width: 0.5),
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildNavItem(0, Icons.chat_bubble_outline, Icons.chat_bubble, 'Chat'),
+                _buildNavItem(1, Icons.timeline_outlined, Icons.timeline, 'Timeline'),
+                _buildTriageNavItem(),
+                _buildNavItem(3, Icons.calendar_today_outlined, Icons.calendar_today, 'Calendar'),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    _widgetClickSubscription?.cancel();
-    super.dispose();
+  Widget _buildNavItem(int index, IconData icon, IconData activeIcon, String label) {
+    final isActive = _currentIndex == index;
+    return GestureDetector(
+      onTap: () => _onTabChanged(index),
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isActive ? activeIcon : icon,
+              size: 24,
+              color: isActive
+                  ? const Color(0xFF22D3EE)
+                  : Colors.white38,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                color: isActive
+                    ? const Color(0xFF22D3EE)
+                    : Colors.white38,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTriageNavItem() {
+    final isActive = _currentIndex == 2;
+    return GestureDetector(
+      onTap: () => _onTabChanged(2),
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(
+                  isActive ? Icons.style : Icons.style_outlined,
+                  size: 24,
+                  color: isActive
+                      ? const Color(0xFF22D3EE)
+                      : Colors.white38,
+                ),
+                // 배지
+                if (_triageCount > 0)
+                  Positioned(
+                    right: -8,
+                    top: -4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF59E0B),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '$_triageCount',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Triage',
+              style: TextStyle(
+                fontSize: 11,
+                color: isActive
+                    ? const Color(0xFF22D3EE)
+                    : Colors.white38,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
